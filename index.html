@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FunnyLang</title>
+    <style type="text/css">
+        body {
+            background-color: rgb(30, 30, 30);
+            font-family: sans-serif;
+            color: white;
+            text-align: center;
+        }
+        textarea {
+            background-color: rgb(50, 50, 50);
+            width: calc(100% - 2em);
+            height: calc(100vh - 40em);
+            resize: none;
+            color: white;
+            outline: none;
+        }
+        #console {
+            height: 30em;
+            margin-top: 1em;
+        }
+        #userinput {
+            width: calc(100% - 2em);
+            background-color: rgb(50, 50, 50);
+            border-style: solid;
+            border-width: 0.5px;
+            padding: 0.25em;
+            color: white;
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+    <h2>FunnyLang</h2>
+    <textarea id="code"></textarea>
+    <textarea disabled="true" id="console">Console:</textarea>
+    <input id="userinput">
+    <script src="./parser.js" defer></script>
+</body>
+</html>
