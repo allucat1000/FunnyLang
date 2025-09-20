@@ -241,7 +241,7 @@ async function runLine(cmd, params, lineNumber) {
 
                 for (const { cmd, params, lineNumber: fnLine } of mem[funcKey]) {
                     if (closed !== null) break;
-                    runLine(cmd, params, fnLine);
+                    await runLine(cmd, params, fnLine);
                 }
 
                 funcDepth--;
