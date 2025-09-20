@@ -221,7 +221,7 @@ async function runLine(cmd, params, lineNumber) {
             for (let i = 0; i < parseFloat(numberResult); i++) {
                 for (const { cmd, params, lineNumber: fnLine } of code) {
                     if (closed !== null) break;
-                    runLine(cmd, params, fnLine);
+                    await runLine(cmd, params, fnLine);
                 }
             }
 
