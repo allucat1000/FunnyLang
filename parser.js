@@ -445,6 +445,7 @@ const input = document.getElementById("code");
 input.addEventListener("keydown", (e) => {
     if (e.altKey && e.key == "Enter") {
         startPerf = performance.now()
+        mem = {};
         closed = null;
         consoleEl.value = "Console:"
         execute(input.value);
