@@ -1,6 +1,8 @@
 const consoleEl = document.getElementById("console")
 let funcDepth = 0;
 let closed = null;
+let startPerf;
+
 
 console.log = (...args) => {
     consoleEl.value += "\n[LOG] " + args.map(a => JSON.stringify(a)).join(" ");
@@ -82,7 +84,6 @@ function parseExpression(params, lineNumber) {
 }
 
 async function execute(rawCode) {
-    const perf = performance.now();
     funcDepth = 0;
     const commands = tokenize(rawCode);
     for (const { cmd, params, lineNumber } of commands) {
@@ -90,7 +91,6 @@ async function execute(rawCode) {
         await runLine(cmd, params, lineNumber);
     }
     consoleEl.value += `\n\n[ Exited application with code ${Math.round(parseFloat(closed)) || 0} ]`;
-    consoleEl.value += `\n\n[ Execution time: ${performance.now() - perf}ms ]`
 }
 
 async function runLine(cmd, params, lineNumber) {
@@ -229,6 +229,51 @@ async function runLine(cmd, params, lineNumber) {
             break;
         }
 
+        case "while": {
+            if (params.length < 3) {
+                closed = 1;
+                console.error(`Loop amount and body required. Line: ${lineNumber}`);
+                return null;
+            }
+
+            const bodyStart = params.indexOf("{");
+            if (bodyStart === -1) {
+                closed = 1;
+                console.error(`Missing '{' in loop statement. Line: ${lineNumber}`);
+                return null;
+            }
+
+            const conditionTokens = params.slice(0, bodyStart);
+            let conditionResult = await evaluateExpression(conditionTokens, lineNumber);
+
+            if (!conditionResult) break;
+
+            const bodyEnd = params.lastIndexOf("}");
+            if (bodyStart === -1 || bodyEnd === -1 || bodyEnd <= bodyStart) {
+                closed = 1;
+                console.error(`Function body must be wrapped in { }. Line: ${lineNumber}`);
+                return null;
+            }
+
+            const rawFuncCode = params[bodyStart + 1];
+            const code = tokenize(rawFuncCode).filter(Boolean);
+            funcDepth++;
+            if (funcDepth > 5000) {
+                closed = 1;
+                console.error(`Maximum recursion depth (5000) reached at line ${lineNumber}`);
+                return;
+            }
+            while (await evaluateExpression(conditionTokens, lineNumber)) {
+                for (const { cmd, params, lineNumber: fnLine } of code) {
+                    if (closed !== null) break;
+                    await runLine(cmd, params, fnLine);
+                }
+            }
+
+            funcDepth--;
+            break;
+        }
+
         default: {
             const funcKey = cmd;
             if (mem[funcKey] && cmd.startsWith("func:")) {
@@ -255,7 +300,7 @@ async function runLine(cmd, params, lineNumber) {
     }
 }
 
-function shuntingYard(tokens, lineNumber) {
+async function shuntingYard(tokens, lineNumber) {
     const output = [];
     const ops = [];
     const precedence = {
@@ -265,11 +310,33 @@ function shuntingYard(tokens, lineNumber) {
     };
     const rightAssoc = {};
 
-    for (const token of tokens) {
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+
         if (!isNaN(token)) {
             output.push({ type: "literal", value: Number(token) });
         } else if (token.startsWith('"') && token.endsWith('"')) {
             output.push({ type: "literal", value: token.slice(1, -1) });
+        } else if (token === "performance") {
+            output.push({ type: "literal", value: performance.now() - startPerf });
+        } else if (token === "fetch") {
+            let url = await evaluateExpression([tokens[++i]], lineNumber);
+            if (url.startsWith('"') && url.endsWith('"')) url = url.slice(1, -1);
+            try {
+                const resp = await fetch(url).then(r => r.text());
+                output.push({ type: "literal", value: resp });
+            } catch {
+                console.error(`Failed to fetch '${url}'. Line: ${lineNumber}`);
+                closed = 1;
+                return [];
+            }
+        } else if (token === "random") {
+            const min = await evaluateExpression([tokens[++i]], lineNumber);
+            const max = await evaluateExpression([tokens[++i]], lineNumber);
+            output.push({ type: "literal", value: (Math.random() * (max - min + 1)) + min });
+        } else if (token === "round") {
+            const num = await evaluateExpression([tokens[++i]], lineNumber);
+            output.push({ type: "literal", value: Math.round(num) });
         } else if (token.startsWith("var:")) {
             const pointer = token.slice(4);
             if (!(pointer in mem)) {
@@ -294,17 +361,17 @@ function shuntingYard(tokens, lineNumber) {
             while (ops.length && ops[ops.length - 1] !== "(") {
                 output.push(ops.pop());
             }
-            if (ops.length === 0) {
+            if (!ops.length) {
                 closed = 1;
                 console.error("Mismatched parentheses");
                 return [];
             }
             ops.pop();
-        } else if (token == "true") {
+        } else if (token === "true") {
             output.push({ type: "literal", value: true });
-        } else if (token == "false") {
+        } else if (token === "false") {
             output.push({ type: "literal", value: false });
-        } else if (token == "null") {
+        } else if (token === "null") {
             output.push({ type: "literal", value: null });
         } else {
             closed = 1;
@@ -367,25 +434,17 @@ function evaluateRPN(rpn, lineNumber) {
 }
 
 async function evaluateExpression(exprTokens, lineNumber) {
-    if (exprTokens[0] === "fetch" && exprTokens[1]) {
-        const urlToken = exprTokens[1];
-        let url = urlToken;
-        if (url.startsWith('"') && url.endsWith('"')) url = url.slice(1, -1);
-        try {
-            return await fetch(url).then(r => r.text());
-        } catch (e) {
-            console.error(`Failed to fetch '${url}'. Line: ${lineNumber}`);
-        }
-    } else {
-        const rpn = shuntingYard(exprTokens, lineNumber);
-        if (!rpn.length) return null;
-        return evaluateRPN(rpn, lineNumber);
-    }
+
+    const rpn = await shuntingYard(exprTokens, lineNumber);
+    if (!rpn.length) return null;
+    return evaluateRPN(rpn, lineNumber);
+
 }
 
 const input = document.getElementById("code");
 input.addEventListener("keydown", (e) => {
     if (e.altKey && e.key == "Enter") {
+        startPerf = performance.now()
         closed = null;
         consoleEl.value = "Console:"
         execute(input.value);
