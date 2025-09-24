@@ -136,7 +136,7 @@ async function runLine(cmd, params, lineNumber) {
                 console.error(`1 or more inputs expected. Line: ${lineNumber}`);
                 return null;
             }
-            let codeStr = await evaluateExpression(params);
+            let codeStr = await evaluateExpression(params, lineNumber);
         
             await execute(codeStr, true);
             break;
