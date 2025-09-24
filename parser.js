@@ -144,6 +144,10 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
         case "break": {
             if (inFunc) {
                 return "Break"
+            } else {
+                console.error("Cannot break on top level!")
+                closed = 1;
+                return;
             }
         }
         case "exit": {
