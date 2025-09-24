@@ -165,14 +165,17 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
             break;
         }
         case "func": {
-            if (params.length < 3) {
+            const bodyStart = params.indexOf("{");
+            const bodyEnd = params.lastIndexOf("}");
+
+            if (bodyStart === -1 || bodyEnd === -1 || bodyEnd <= bodyStart) {
                 closed = 1;
-                console.error(`Function name and body required. Line: ${lineNumber}`);
+                console.error(`Function body must be wrapped in { }. Line: ${lineNumber}`);
                 return null;
             }
 
-            const funcNameParams = params[0];
-            const match = funcNameParams.match(/^(\w+)\((.*)\)$/);
+            const header = params.slice(0, bodyStart).join(" ");
+            const match = header.match(/^([a-zA-Z_]\w*)\s*\(([^)]*)\)$/);
             if (!match) {
                 closed = 1;
                 console.error(`Invalid function declaration. Line: ${lineNumber}`);
@@ -181,14 +184,6 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
 
             const funcName = match[1];
             const paramNames = match[2].split(",").map(s => s.trim()).filter(Boolean);
-
-            const bodyStart = params.indexOf("{");
-            const bodyEnd = params.lastIndexOf("}");
-            if (bodyStart === -1 || bodyEnd === -1 || bodyEnd <= bodyStart) {
-                closed = 1;
-                console.error(`Function body must be wrapped in { }. Line: ${lineNumber}`);
-                return null;
-            }
 
             const rawFuncCode = params[bodyStart + 1];
 
@@ -358,20 +353,26 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
                 }
 
                 const localMem = { ...mem };
-                for (let i = 0; i < func.params.length; i++) {
-                    const argValue = params[i] !== undefined ? await evaluateExpression([params[i]], lineNumber) : null;
-                    localMem[func.params[i]] = argValue;
+
+                if (func.params && func.params.length > 0) {
+                    for (let i = 0; i < func.params.length; i++) {
+                        const argValue = params[i] !== undefined
+                            ? await evaluateExpression([params[i]], lineNumber)
+                            : null;
+                        localMem[func.params[i]] = argValue;
+                    }
                 }
 
                 const oldMem = mem;
                 mem = localMem;
+
                 for (const { cmd, params, lineNumber: fnLine } of func.code) {
                     if (closed !== null) break;
                     const data = await runLine(cmd, params, fnLine);
                     if (data == "Break") break;
                 }
-                mem = oldMem;
 
+                mem = oldMem;
                 funcDepth--;
             } else {
                 console.error(`Unknown command '${cmd}'. Line: ${lineNumber}`);
@@ -379,6 +380,7 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
                 return;
             }
         }
+
 
     }
 }
