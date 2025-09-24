@@ -102,7 +102,7 @@ function resolveValue(token) {
     return token;
 }
 
-async function runLine(cmd, params, lineNumber) {
+async function runLine(cmd, params, lineNumber, inFunc = false) {
     switch (cmd) {
         case "#": {
             break;
@@ -140,6 +140,11 @@ async function runLine(cmd, params, lineNumber) {
         
             await execute(codeStr, true);
             break;
+        }
+        case "break": {
+            if (inFunc) {
+                return "Break"
+            }
         }
         case "exit": {
             closed = params[0] || 0;
@@ -228,7 +233,8 @@ async function runLine(cmd, params, lineNumber) {
 
             for (const { cmd, params, lineNumber: fnLine } of code) {
                 if (closed !== null) break;
-                await runLine(cmd, params, fnLine);
+                const data = await runLine(cmd, params, fnLine, true);
+                if (data == "Break") break;
             }
 
             funcDepth--;
@@ -272,7 +278,8 @@ async function runLine(cmd, params, lineNumber) {
             for (let i = 0; i < parseFloat(numberResult); i++) {
                 for (const { cmd, params, lineNumber: fnLine } of code) {
                     if (closed !== null) break;
-                    await runLine(cmd, params, fnLine);
+                    const data = await runLine(cmd, params, fnLine, true);
+                    if (data == "Break") break;
                 }
             }
 
@@ -325,7 +332,8 @@ async function runLine(cmd, params, lineNumber) {
             while (await evaluateExpression(conditionTokens, lineNumber)) {
                 for (const { cmd, params, lineNumber: fnLine } of code) {
                     if (closed !== null) break;
-                    await runLine(cmd, params, fnLine);
+                    const data = await runLine(cmd, params, fnLine);
+                    if (data == "Break") break;
                 }
             }
 
@@ -355,7 +363,8 @@ async function runLine(cmd, params, lineNumber) {
                 mem = localMem;
                 for (const { cmd, params, lineNumber: fnLine } of func.code) {
                     if (closed !== null) break;
-                    await runLine(cmd, params, fnLine);
+                    const data = await runLine(cmd, params, fnLine);
+                    if (data == "Break") break;
                 }
                 mem = oldMem;
 
