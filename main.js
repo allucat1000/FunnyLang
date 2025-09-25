@@ -121,16 +121,25 @@ function parseExpression(params, lineNumber) {
 async function execute(rawCode, evalEnv = false) {
     funcDepth = 0;
     const commands = tokenize(rawCode);
+    let awaitLine = false;
     for (const { cmd, params, lineNumber } of commands) {
         if (closed !== null) break;
-        await runLine(cmd, params, lineNumber);
+        let data;
+        if (cmd == "await") data = await runLine(params[0], params.slice(1), lineNumber, false, true); else data = await runLine(cmd, params, lineNumber);
+        if (data == "Break") break;
     }
     if (!evalEnv) console.log(`[ Exited application with code ${Math.round(parseFloat(closed)) || 0} ]`);
 }
 
-async function runLine(cmd, params, lineNumber, inFunc = false) {
+async function runLine(cmd, params, lineNumber, inFunc = false, awaited = false) {
+    let awaitUnused = awaited;
     switch (cmd) {
         case "#": {
+            break;
+        }
+        case "sleep": {
+            const time = parseFloat(await evaluateExpression(params, lineNumber));
+            if (awaited) { awaitUnused = false; await new Promise(resolve => setTimeout(resolve, time)); }
             break;
         }
         case "rend": {
@@ -162,7 +171,7 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
                 console.error(`1 or more inputs expected. Line: ${lineNumber}`);
                 return null;
             }
-            let codeStr = await evaluateExpression(params, lineNumber);
+            const codeStr = await evaluateExpression(params, lineNumber);
         
             await execute(codeStr, true);
             break;
@@ -215,7 +224,7 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
 
             mem[`func:${funcName}`] = {
                 params: paramNames,
-                code: tokenize(rawFuncCode).filter(Boolean)
+                code: rawFuncCode
             };
             break;
         }
@@ -258,8 +267,9 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
 
             for (const { cmd, params, lineNumber: fnLine } of code) {
                 if (closed !== null) break;
-                const data = await runLine(cmd, params, fnLine, true);
-                if (data == "Break") break;
+                let data;
+                if (cmd == "await") data = await runLine(params[0], params.slice(1), fnLine, false, true); else data = await runLine(cmd, params, fnLine, false, false);
+                if (data == "Break") return "Break";
             }
 
             funcDepth--;
@@ -303,7 +313,8 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
             for (let i = 0; i < parseFloat(numberResult); i++) {
                 for (const { cmd, params, lineNumber: fnLine } of code) {
                     if (closed !== null) break;
-                    const data = await runLine(cmd, params, fnLine, true);
+                    let data;
+                    if (cmd == "await") data = await runLine(params[0], params.slice(1), fnLine, false, true); else data = await runLine(cmd, params, fnLine, false, false);
                     if (data == "Break") break;
                 }
             }
@@ -357,7 +368,8 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
             while (await evaluateExpression(conditionTokens, lineNumber)) {
                 for (const { cmd, params, lineNumber: fnLine } of code) {
                     if (closed !== null) break;
-                    const data = await runLine(cmd, params, fnLine);
+                    let data;
+                    if (cmd == "await") data = await runLine(params[0], params.slice(1), fnLine, false, true); else data = await runLine(cmd, params, fnLine, false, false);
                     if (data == "Break") break;
                 }
             }
@@ -366,8 +378,67 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
             break;
         }
 
+        case "switch": {
+            const funcStart = params.indexOf("{");
+            if (funcStart === -1) {
+                closed = 1;
+                console.error(`Switch missing '{'. Line: ${lineNumber}`);
+                return null;
+            }
+
+            const checkData = await evaluateExpression(params.slice(0, funcStart), lineNumber);
+            const data = params.slice(funcStart + 1, -1).join(" ");
+
+            function parseCases(input) {
+                const regex = /\b(case\s+"([^"]+)"|default)\s*\{/g;
+                const cases = [];
+                let match;
+
+                while ((match = regex.exec(input)) !== null) {
+                    const name = match[2] !== undefined ? match[2] : "default";
+
+                    let startIndex = regex.lastIndex;
+                    let depth = 1;
+                    let i = startIndex;
+
+                    while (i < input.length && depth > 0) {
+                        if (input[i] === "{") depth++;
+                        else if (input[i] === "}") depth--;
+                        i++;
+                    }
+
+                    const body = input.slice(startIndex, i - 1).trim();
+                    cases.push({ name, body });
+
+                    regex.lastIndex = i;
+                }
+
+                return cases;
+            }
+
+            const cases = parseCases(data);
+            let defaultCase;
+            let caseFound = false;
+
+            for (const c of cases) {
+                if (c.name !== "default" && checkData == c.name) {
+                    caseFound = true;
+                    await execute(c.body, true);
+                    break;
+                } else if (c.name === "default") {
+                    defaultCase = c.body;
+                }
+            }
+
+            if (defaultCase && !caseFound) {
+                await execute(defaultCase, true);
+            }
+
+            break;
+        }
+
         default: {
-            const funcKey = cmd.startsWith("func:") ? cmd.slice(5) : cmd;
+            const funcKey = cmd?.startsWith("func:") ? cmd.slice(5) : cmd;
             const func = mem[`func:${funcKey}`];
 
             if (func) {
@@ -389,12 +460,7 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
                         mem[name] = argValue;
                     }
                 }
-
-                for (const { cmd, params, lineNumber: fnLine } of func.code) {
-                    if (closed !== null) break;
-                    const data = await runLine(cmd, params, fnLine);
-                    if (data == "Break") break;
-                }
+                if (awaited) { awaitUnused = false; await execute(func.code, true) } else execute(func.code, true, undefined, {});
 
                 if (func.params && func.params.length > 0) {
                     for (let i = 0; i < func.params.length; i++) {
@@ -418,6 +484,7 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
 
 
     }
+    if (awaitUnused) console.warn(`This command cannot be awaited. Line: ${lineNumber}`)
 }
 
 async function shuntingYard(tokens, lineNumber) {
