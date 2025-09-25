@@ -536,8 +536,7 @@ async function shuntingYard(tokens, lineNumber, scope = {}) {
             let url = await evaluateExpression([tokens[++i]], lineNumber);
             if (url.startsWith('"') && url.endsWith('"')) url = url.slice(1, -1);
             try {
-                let resp;
-                if (awaited) resp = await fetch(url); else resp = fetch(url);
+                const resp = await fetch(url);
                 awaited = false;
                 const data = {
                     status: resp.status,
