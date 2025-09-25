@@ -514,12 +514,15 @@ async function shuntingYard(tokens, lineNumber, scope = {}) {
         "splice": 3
     };
     const rightAssoc = {};
-
+    let awaited = false;
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
 
         if (!isNaN(token)) {
             output.push({ type: "literal", value: Number(token) });
+        } else if (token == "await") {
+            awaited = true;
+            continue;
         } else if (token.startsWith('"') && token.endsWith('"')) {
             output.push({ type: "literal", value: token.slice(1, -1) });
         } else if (token === "fnl:performance") {
@@ -533,7 +536,9 @@ async function shuntingYard(tokens, lineNumber, scope = {}) {
             let url = await evaluateExpression([tokens[++i]], lineNumber);
             if (url.startsWith('"') && url.endsWith('"')) url = url.slice(1, -1);
             try {
-                const resp = await fetch(url)
+                let resp;
+                if (awaited) resp = await fetch(url); else resp = fetch(url);
+                awaited = false;
                 const data = {
                     status: resp.status,
                     ok: resp.ok,
@@ -596,6 +601,10 @@ async function shuntingYard(tokens, lineNumber, scope = {}) {
             closed = 1;
             console.error(`Unknown token '${token}'. Line: ${lineNumber}`);
             return [];
+        }
+        if (awaited) {
+            console.warn(`This expression doesn't use await. Line: ${lineNumber}`)
+            awaited = false;
         }
     }
 
