@@ -69,6 +69,37 @@ function tokenize(rawCode) {
   });
 }
 
+function getNestedVar(path) {
+  if (!path) return undefined;
+  const parts = path.split(/[\.\[\]]/).filter(Boolean);
+  let cur = mem;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    const key = /^\d+$/.test(p) ? Number(p) : p;
+    cur = cur[key];
+  }
+  return cur;
+}
+
+function resolveValue(token) {
+  if (token && token.type === "varRef") {
+    return getNestedVar(token.varName);
+  }
+  return token;
+}
+
+function getVarParentAndKey(varName) {
+  const parts = varName.split(/[\.\[\]]/).filter(Boolean);
+  let parent = mem;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = /^\d+$/.test(parts[i]) ? Number(parts[i]) : parts[i];
+    if (parent == null) return { parent: null, key: null };
+    parent = parent[k];
+  }
+  const last = parts[parts.length - 1];
+  const key = /^\d+$/.test(last) ? Number(last) : last;
+  return { parent, key };
+}
 
 function parseExpression(params, lineNumber) {
     if (params.length < 3) {
@@ -95,11 +126,6 @@ async function execute(rawCode, evalEnv = false) {
         await runLine(cmd, params, lineNumber);
     }
     if (!evalEnv) console.log(`[ Exited application with code ${Math.round(parseFloat(closed)) || 0} ]`);
-}
-
-function resolveValue(token) {
-    if (token && token.type === "varRef") return mem[token.varName];
-    return token;
 }
 
 async function runLine(cmd, params, lineNumber, inFunc = false) {
@@ -352,19 +378,17 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
                     return;
                 }
 
-                const localMem = { ...mem };
-
+                const saved = {};
                 if (func.params && func.params.length > 0) {
                     for (let i = 0; i < func.params.length; i++) {
+                        const name = func.params[i];
+                        saved[name] = mem.hasOwnProperty(name) ? mem[name] : Symbol("fnl__undefined");
                         const argValue = params[i] !== undefined
                             ? await evaluateExpression([params[i]], lineNumber)
                             : null;
-                        localMem[func.params[i]] = argValue;
+                        mem[name] = argValue;
                     }
                 }
-
-                const oldMem = mem;
-                mem = localMem;
 
                 for (const { cmd, params, lineNumber: fnLine } of func.code) {
                     if (closed !== null) break;
@@ -372,7 +396,17 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
                     if (data == "Break") break;
                 }
 
-                mem = oldMem;
+                if (func.params && func.params.length > 0) {
+                    for (let i = 0; i < func.params.length; i++) {
+                        const name = func.params[i];
+                        if (saved[name] === Symbol.for("fnl__undefined") || saved[name] === Symbol("fnl__undefined")) {
+                            delete mem[name];
+                        } else {
+                            mem[name] = saved[name];
+                        }
+                    }
+                }
+
                 funcDepth--;
             } else {
                 console.error(`Unknown command '${cmd}'. Line: ${lineNumber}`);
@@ -380,6 +414,7 @@ async function runLine(cmd, params, lineNumber, inFunc = false) {
                 return;
             }
         }
+
 
 
     }
@@ -421,7 +456,6 @@ async function shuntingYard(tokens, lineNumber) {
                 const data = {
                     status: resp.status,
                     ok: resp.ok,
-                    headers: resp.headers,
                     body: await resp.text()
                 }
                 output.push({ type: "literal", value: data });
@@ -529,52 +563,85 @@ function evaluateRPN(rpn, lineNumber) {
         } else if (typeof token === "string" && ["push", "pop", "slice", "splice"].includes(token)) {
             switch (token) {
                 case "push": {
-                    if (stack.length < 2) { 
-                        closed = 1; 
-                        console.error(`push requires [arrayVar, value]. Line: ${lineNumber}`); 
-                        return null; 
+                    if (stack.length < 2) {
+                        closed = 1;
+                        console.error(`push requires [array, value]. Line: ${lineNumber}`);
+                        return null;
                     }
                     let val = stack.pop();
                     const arrRef = stack.pop();
-
                     val = resolveValue(val);
 
-                    if (!arrRef || arrRef.type !== "varRef") { 
-                        closed = 1; 
-                        console.error(`push target must be a var reference. Line: ${lineNumber}`); 
-                        return null; 
+                    if (!arrRef || arrRef.type !== "varRef") {
+                        closed = 1;
+                        console.error(`push target must be a var reference. Line: ${lineNumber}`);
+                        return null;
                     }
 
-                    if (!Array.isArray(mem[arrRef.varName])) {
+                    const { parent, key } = getVarParentAndKey(arrRef.varName);
+                    if (!parent || !Array.isArray(parent[key])) {
                         closed = 1;
                         console.error(`Variable '${arrRef.varName}' is not an array. Line: ${lineNumber}`);
                         return null;
                     }
 
-                    mem[arrRef.varName].push(val);
-                    stack.push(mem[arrRef.varName]);
+                    parent[key].push(val);
+                    stack.push(parent[key]);
                     break;
                 }
+
                 case "pop": {
-                    if (stack.length < 1) { 
-                        closed = 1; 
-                        console.error(`pop requires [arrayVar]. Line: ${lineNumber}`); 
-                        return null; 
+                    if (stack.length < 1) {
+                        closed = 1;
+                        console.error(`pop requires [array]. Line: ${lineNumber}`);
+                        return null;
                     }
                     const arrRef = stack.pop();
-                    if (!arrRef || arrRef.type !== "varRef") { 
-                        closed = 1; 
-                        console.error(`pop target must be a var reference. Line: ${lineNumber}`); 
-                        return null; 
+                    if (!arrRef || arrRef.type !== "varRef") {
+                        closed = 1;
+                        console.error(`pop target must be a var reference. Line: ${lineNumber}`);
+                        return null;
                     }
-                    if (!Array.isArray(mem[arrRef.varName])) { 
-                        closed = 1; 
-                        console.error(`Variable '${arrRef.varName}' is not an array. Line: ${lineNumber}`); 
-                        return null; 
+
+                    const { parent, key } = getVarParentAndKey(arrRef.varName);
+                    if (!parent || !Array.isArray(parent[key])) {
+                        closed = 1;
+                        console.error(`Variable '${arrRef.varName}' is not an array. Line: ${lineNumber}`);
+                        return null;
                     }
-                    stack.push(mem[arrRef.varName].pop());
+
+                    stack.push(parent[key].pop());
+                    break;
+                    }
+
+                    case "splice": {
+                    if (stack.length < 3) {
+                        closed = 1;
+                        console.error(`splice requires [array, start, deleteCount]. Line: ${lineNumber}`);
+                        return null;
+                    }
+                    const deleteCount = resolveValue(stack.pop());
+                    const start = resolveValue(stack.pop());
+                    const arrRef = stack.pop();
+
+                    if (!arrRef || arrRef.type !== "varRef") {
+                        closed = 1;
+                        console.error(`splice target must be a var reference. Line: ${lineNumber}`);
+                        return null;
+                    }
+
+                    const { parent, key } = getVarParentAndKey(arrRef.varName);
+                    if (!parent || !Array.isArray(parent[key])) {
+                        closed = 1;
+                        console.error(`Variable '${arrRef.varName}' is not an array. Line: ${lineNumber}`);
+                        return null;
+                    }
+
+                    const removed = parent[key].splice(start, deleteCount);
+                    stack.push(removed);
                     break;
                 }
+
                 case "slice": {
                     if (stack.length < 3) { closed = 1; console.error(`slice requires [array, start, end]. Line: ${lineNumber}`); return null; }
                     const end = stack.pop();
@@ -586,20 +653,6 @@ function evaluateRPN(rpn, lineNumber) {
                         return null;
                     }
                     stack.push(mem[arrRef.varName].slice(start, end));
-                    break;
-                }
-                case "splice": {
-                    if (stack.length < 3) { closed = 1; console.error(`splice requires [array, start, deleteCount]. Line: ${lineNumber}`); return null; }
-                    const deleteCount = stack.pop();
-                    const start = stack.pop();
-                    const arrRef = stack.pop();
-                    if (!Array.isArray(mem[arrRef.varName])) {
-                        closed = 1;
-                        console.error(`Variable '${arrRef.varName}' is not an array. Line: ${lineNumber}`);
-                        return null;
-                    }
-                    mem[arrRef.varName].splice(start, deleteCount);
-                    stack.push(mem[arrRef.varName]);
                     break;
                 }
 
@@ -630,7 +683,7 @@ async function evaluateExpression(exprTokens, lineNumber) {
     if (closed !== null) return null;
 
     while (result && result.type === "varRef") {
-        result = mem[result.varName];
+    result = resolveValue(result);
     }
 
     return result;
