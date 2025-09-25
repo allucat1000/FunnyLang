@@ -67,25 +67,25 @@ function tokenize(rawCode) {
 
     return { cmd, params, lineNumber: idx + 1 };
   });
+}  
+
+function getScopeNestedVar(path) {
+    if (!path) return undefined;
+    const parts = path.split(/[\.\[\]]/).filter(Boolean);
+    let cur = mem;
+    for (const p of parts) {
+        if (cur == null) return undefined;
+        const key = /^\d+$/.test(p) ? Number(p) : p;
+        cur = cur[key];
+    }
+    return cur;
 }
 
-function getNestedVar(path) {
-  if (!path) return undefined;
-  const parts = path.split(/[\.\[\]]/).filter(Boolean);
-  let cur = mem;
-  for (const p of parts) {
-    if (cur == null) return undefined;
-    const key = /^\d+$/.test(p) ? Number(p) : p;
-    cur = cur[key];
-  }
-  return cur;
-}
-
-function resolveValue(token) {
-  if (token && token.type === "varRef") {
-    return getNestedVar(token.varName);
-  }
-  return token;
+function resolveValue(token, scope = {}) {
+    if (token && token.type === "varRef") {
+        return getNestedVar(token.varName, scope);
+    }
+    return token;
 }
 
 function getVarParentAndKey(varName) {
@@ -118,21 +118,28 @@ function parseExpression(params, lineNumber) {
     return { target, exprTokens };
 }
 
-async function execute(rawCode, evalEnv = false) {
+async function execute(rawCode, evalEnv = false, extraScope = {}) {
     funcDepth = 0;
     const commands = tokenize(rawCode);
-    let awaitLine = false;
     for (const { cmd, params, lineNumber } of commands) {
         if (closed !== null) break;
-        let data;
-        if (cmd == "await") data = await runLine(params[0], params.slice(1), lineNumber, false, true); else data = await runLine(cmd, params, lineNumber);
-        if (data == "Break") break;
+
+        if (cmd === "await") {
+            await runLine(params[0], params.slice(1), lineNumber, false, true, extraScope);
+        } else {
+            await runLine(cmd, params, lineNumber, false, false, extraScope);
+        }
     }
     if (!evalEnv) console.log(`[ Exited application with code ${Math.round(parseFloat(closed)) || 0} ]`);
 }
 
-async function runLine(cmd, params, lineNumber, inFunc = false, awaited = false) {
+async function runLine(cmd, params, lineNumber, inFunc = false, awaited = false, scope = {}) {
     let awaitUnused = awaited;
+
+    const getVar = (name) => (name in scope ? scope[name] : mem[name]);
+    const setVar = (name, value) => { if (name in scope) scope[name] = value; else mem[name] = value; };
+    const resolveToken = (token) => token && token.type === "varRef" ? getVar(token.varName) : token;
+    
     switch (cmd) {
         case "#": {
             break;
@@ -165,15 +172,20 @@ async function runLine(cmd, params, lineNumber, inFunc = false, awaited = false)
             break;
         }
         // Spooky!
+
         case "eval": {
             if (params.length < 1) {
                 closed = 1;
                 console.error(`1 or more inputs expected. Line: ${lineNumber}`);
                 return null;
             }
-            const codeStr = await evaluateExpression(params, lineNumber);
-        
-            await execute(codeStr, true);
+            const codeStr = await evaluateExpression(params, lineNumber, scope);
+            if (awaited) {
+                await execute(codeStr, true, scope, true);
+                awaitUnused = false;
+            } else {
+                execute(codeStr, true, scope, false);
+            }
             break;
         }
         case "break": {
@@ -379,63 +391,63 @@ async function runLine(cmd, params, lineNumber, inFunc = false, awaited = false)
         }
 
         case "switch": {
-            const funcStart = params.indexOf("{");
-            if (funcStart === -1) {
+            const braceStart = params.indexOf("{");
+            if (braceStart === -1) {
                 closed = 1;
                 console.error(`Switch missing '{'. Line: ${lineNumber}`);
                 return null;
             }
 
-            const checkData = await evaluateExpression(params.slice(0, funcStart), lineNumber);
-            const data = params.slice(funcStart + 1, -1).join(" ");
+            const checkData = String(await evaluateExpression(params.slice(0, braceStart), lineNumber, scope));
+            const switchContent = params.slice(braceStart + 1, -1).join(" ");
 
             function parseCases(input) {
-                const regex = /\b(case\s+"([^"]+)"|default)\s*\{/g;
                 const cases = [];
-                let match;
+                let pos = 0;
 
-                while ((match = regex.exec(input)) !== null) {
-                    const name = match[2] !== undefined ? match[2] : "default";
+                while (pos < input.length) {
+                    const caseMatch = input.slice(pos).match(/\b(case\s+"([^"]+)"|default)\s*\{/);
+                    if (!caseMatch) break;
 
-                    let startIndex = regex.lastIndex;
+                    const name = caseMatch[2] !== undefined ? caseMatch[2] : "default";
+                    pos += caseMatch.index + caseMatch[0].length;
+
                     let depth = 1;
-                    let i = startIndex;
-
-                    while (i < input.length && depth > 0) {
-                        if (input[i] === "{") depth++;
-                        else if (input[i] === "}") depth--;
-                        i++;
+                    let start = pos;
+                    while (pos < input.length && depth > 0) {
+                        if (input[pos] === "{") depth++;
+                        else if (input[pos] === "}") depth--;
+                        pos++;
                     }
 
-                    const body = input.slice(startIndex, i - 1).trim();
+                    const body = input.slice(start, pos - 1).trim();
                     cases.push({ name, body });
-
-                    regex.lastIndex = i;
                 }
 
                 return cases;
             }
 
-            const cases = parseCases(data);
+            const cases = parseCases(switchContent);
             let defaultCase;
             let caseFound = false;
 
             for (const c of cases) {
-                if (c.name !== "default" && checkData == c.name) {
+                if (c.name !== "default" && checkData === c.name) {
                     caseFound = true;
-                    await execute(c.body, true);
+                    await execute(c.body, true, scope);
                     break;
                 } else if (c.name === "default") {
                     defaultCase = c.body;
                 }
             }
 
-            if (defaultCase && !caseFound) {
-                await execute(defaultCase, true);
+            if (!caseFound && defaultCase) {
+                await execute(defaultCase, true, scope);
             }
 
             break;
         }
+
 
         default: {
             const funcKey = cmd?.startsWith("func:") ? cmd.slice(5) : cmd;
@@ -443,51 +455,53 @@ async function runLine(cmd, params, lineNumber, inFunc = false, awaited = false)
 
             if (func) {
                 funcDepth++;
-                if (funcDepth > 5000) {
-                    closed = 1;
-                    console.error(`Maximum recursion depth (5000) reached at line ${lineNumber}`);
-                    return;
-                }
+                if (funcDepth > 5000) { closed = 1; console.error(`Max recursion depth reached at line ${lineNumber}`); return; }
 
-                const saved = {};
+                const localScope = { ...scope };
+
                 if (func.params && func.params.length > 0) {
                     for (let i = 0; i < func.params.length; i++) {
                         const name = func.params[i];
-                        saved[name] = mem.hasOwnProperty(name) ? mem[name] : Symbol("fnl__undefined");
                         const argValue = params[i] !== undefined
-                            ? await evaluateExpression([params[i]], lineNumber)
+                            ? await evaluateExpression([params[i]], lineNumber, scope)
                             : null;
-                        mem[name] = argValue;
+                        localScope[name] = argValue;
                     }
                 }
-                if (awaited) { awaitUnused = false; await execute(func.code, true) } else execute(func.code, true, undefined, {});
 
-                if (func.params && func.params.length > 0) {
-                    for (let i = 0; i < func.params.length; i++) {
-                        const name = func.params[i];
-                        if (saved[name] === Symbol.for("fnl__undefined") || saved[name] === Symbol("fnl__undefined")) {
-                            delete mem[name];
-                        } else {
-                            mem[name] = saved[name];
-                        }
-                    }
+                if (awaited) {
+                    await execute(func.code, true, localScope, true);
+                    awaitUnused = false;
+                } else {
+                    execute(func.code, true, localScope, false);
                 }
 
                 funcDepth--;
             } else {
                 console.error(`Unknown command '${cmd}'. Line: ${lineNumber}`);
                 closed = 1;
-                return;
             }
+
         }
-
-
 
     }
     if (awaitUnused) console.warn(`This command cannot be awaited. Line: ${lineNumber}`)
 }
 
-async function shuntingYard(tokens, lineNumber) {
+
+function getScopeVar(varName, scope) {
+    if (!varName) return undefined;
+    const parts = varName.split(/[\.\[\]]/).filter(Boolean);
+    let cur = varName in scope ? scope : mem;
+    for (const p of parts) {
+        if (cur == null) return undefined;
+        const key = /^\d+$/.test(p) ? Number(p) : p;
+        cur = cur[key];
+    }
+    return cur;
+}
+
+async function shuntingYard(tokens, lineNumber, scope = {}) {
     const output = [];
     const ops = [];
     const precedence = {
@@ -540,7 +554,7 @@ async function shuntingYard(tokens, lineNumber) {
             output.push({ type: "literal", value: Math.round(num) });
         } else if (token.startsWith("var:")) {
             const pointer = token.slice(4);
-            output.push({ type: "varRef", varName: pointer });
+            output.push({ type: "varRef", varName: pointer, scope });
         } else if (token in precedence) {
             while (
                 ops.length &&
@@ -598,7 +612,14 @@ async function shuntingYard(tokens, lineNumber) {
     return output;
 }
 
-function evaluateRPN(rpn, lineNumber) {
+function resolveValue(token, scope = {}) {
+    if (token && token.type === "varRef") {
+        return getNestedVar(token.varName, scope);
+    }
+    return token;
+}
+
+function evaluateRPN(rpn, lineNumber, scope = {}) {
     const stack = [];
     for (const token of rpn) {
         if (token && typeof token === "object" && token.type === "literal") {
@@ -613,8 +634,8 @@ function evaluateRPN(rpn, lineNumber) {
             }
             const rawB = stack.pop();
             const rawA = stack.pop();
-            const a = resolveValue(rawA);
-            const b = resolveValue(rawB);
+            const a = resolveValue(rawA, scope);
+            const b = resolveValue(rawB, scope);
             switch (token) {
                 case "+": stack.push(typeof a === "number" && typeof b === "number" ? a + b : String(a) + String(b)); break;
                 case "-": stack.push(Number(a) - Number(b)); break;
@@ -637,7 +658,7 @@ function evaluateRPN(rpn, lineNumber) {
                     }
                     let val = stack.pop();
                     const arrRef = stack.pop();
-                    val = resolveValue(val);
+                    val = resolveValue(val, scope);
 
                     if (!arrRef || arrRef.type !== "varRef") {
                         closed = 1;
@@ -656,7 +677,6 @@ function evaluateRPN(rpn, lineNumber) {
                     stack.push(parent[key]);
                     break;
                 }
-
                 case "pop": {
                     if (stack.length < 1) {
                         closed = 1;
@@ -679,16 +699,16 @@ function evaluateRPN(rpn, lineNumber) {
 
                     stack.push(parent[key].pop());
                     break;
-                    }
+                }
 
-                    case "splice": {
+                case "splice": {
                     if (stack.length < 3) {
                         closed = 1;
                         console.error(`splice requires [array, start, deleteCount]. Line: ${lineNumber}`);
                         return null;
                     }
-                    const deleteCount = resolveValue(stack.pop());
-                    const start = resolveValue(stack.pop());
+                    const deleteCount = resolveValue(stack.pop(), scope);
+                    const start = resolveValue(stack.pop(), scope);
                     const arrRef = stack.pop();
 
                     if (!arrRef || arrRef.type !== "varRef") {
@@ -710,19 +730,31 @@ function evaluateRPN(rpn, lineNumber) {
                 }
 
                 case "slice": {
-                    if (stack.length < 3) { closed = 1; console.error(`slice requires [array, start, end]. Line: ${lineNumber}`); return null; }
-                    const end = stack.pop();
-                    const start = stack.pop();
+                    if (stack.length < 3) {
+                        closed = 1;
+                        console.error(`slice requires [array, start, end]. Line: ${lineNumber}`);
+                        return null;
+                    }
+                    const end = resolveValue(stack.pop(), scope);
+                    const start = resolveValue(stack.pop(), scope);
                     const arrRef = stack.pop();
-                    if (!Array.isArray(mem[arrRef.varName])) {
+
+                    if (!arrRef || arrRef.type !== "varRef") {
+                        closed = 1;
+                        console.error(`slice target must be a var reference. Line: ${lineNumber}`);
+                        return null;
+                    }
+
+                    const { parent, key } = getVarParentAndKey(arrRef.varName);
+                    if (!parent || !Array.isArray(parent[key])) {
                         closed = 1;
                         console.error(`Variable '${arrRef.varName}' is not an array. Line: ${lineNumber}`);
                         return null;
                     }
-                    stack.push(mem[arrRef.varName].slice(start, end));
+
+                    stack.push(parent[key].slice(start, end));
                     break;
                 }
-
             }
         } else {
             closed = 1;
@@ -737,20 +769,39 @@ function evaluateRPN(rpn, lineNumber) {
         return null;
     }
 
-    return stack[0];
+    let result = stack[0];
+    if (result && result.type === "varRef") {
+        result = resolveValue(result, scope);
+    }
+    return result;
 }
 
 
+function getNestedVar(varName, scope = {}) {
+    if (!varName) return undefined;
 
-async function evaluateExpression(exprTokens, lineNumber) {
-    const rpn = await shuntingYard(exprTokens, lineNumber);
+    const parts = varName.split(/[\.\[\]]/).filter(Boolean);
+    let cur = varName in scope ? scope : mem;
+
+    for (const p of parts) {
+        if (cur == null) return undefined;
+        const key = /^\d+$/.test(p) ? Number(p) : p;
+        cur = cur[key];
+    }
+
+    return cur;
+}
+
+
+async function evaluateExpression(exprTokens, lineNumber, scope = {}) {
+    const rpn = await shuntingYard(exprTokens, lineNumber, scope);
     if (!rpn.length) return null;
 
-    let result = evaluateRPN(rpn, lineNumber);
+    let result = evaluateRPN(rpn, lineNumber, scope);
     if (closed !== null) return null;
 
     while (result && result.type === "varRef") {
-    result = resolveValue(result);
+        result = getNestedVar(result.varName, scope);
     }
 
     return result;
