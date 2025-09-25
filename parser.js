@@ -443,7 +443,7 @@ async function shuntingYard(tokens, lineNumber) {
             output.push({ type: "literal", value: token.slice(1, -1) });
         } else if (token === "fnl:performance") {
             output.push({ type: "literal", value: performance.now() - startPerf });
-        } else if (token === "fnl:width" || token === "fnl.height") {
+        } else if (token === "fnl:width" || token === "fnl:height") {
             if (token.endsWith("t")) output.push({ type: "literal", value: canv.height }); else output.push({ type: "literal", value: canv.width });
         } else if (token == "fnl:idbGet") {
             const path = await evaluateExpression([tokens[++i]], lineNumber);
